@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
@@ -9,24 +10,24 @@ import 'engine_audio.dart';
 ///
 /// Pseudo-3D road projection: curves, hills, rumble strips, lane markings,
 /// exponential fog, parallax background, roadside sprites and traffic.
+/// Graphics use the original game's sprites.png / background.png atlases.
 
 // ---------------------------------------------------------------------------
 // Constants (mirrors the original game's settings)
 // ---------------------------------------------------------------------------
 const double kFps = 60;
 const double kStep = 1 / kFps;
-const int kSegmentLength = 200; // length of a single road segment
-const int kRumbleLength = 3; // segments per red/white rumble strip
-const double kRoadWidth = 2000; // half-width of the road
+const int kSegmentLength = 200;
+const int kRumbleLength = 3;
+const double kRoadWidth = 2000;
 const int kLanes = 3;
-const double kFieldOfView = 100; // degrees
+const double kFieldOfView = 100;
 const double kCameraHeight = 1000;
-const int kDrawDistance = 300; // segments drawn ahead
+const int kDrawDistance = 300;
 const double kFogDensity = 5;
-const double kCentrifugal = 0.3; // how much curves push the player sideways
+const double kCentrifugal = 0.3;
 
-final double kCameraDepth =
-    1 / math.tan((kFieldOfView / 2) * math.pi / 180);
+final double kCameraDepth = 1 / math.tan((kFieldOfView / 2) * math.pi / 180);
 final double kPlayerZ = kCameraHeight * kCameraDepth;
 
 const double kMaxSpeed = kSegmentLength / kStep; // 12000
@@ -36,21 +37,80 @@ final double kDecel = -kMaxSpeed / 5;
 final double kOffRoadDecel = -kMaxSpeed / 2;
 final double kOffRoadLimit = kMaxSpeed / 4;
 
-// Sprite scaling (matches: 0.3 * (1/playerWidth), roadWidth multiplier folded in)
+// SPRITES.SCALE = 0.3 * (1 / PLAYER_STRAIGHT.w), PLAYER_STRAIGHT.w == 80
 const double kSpriteScale = 0.3 / 80.0;
 
+const double kSkySpeed = 0.001;
+const double kHillSpeed = 0.002;
+const double kTreeSpeed = 0.003;
+
 // ---------------------------------------------------------------------------
-// Colors
+// Sprite atlas — exact coordinates from the original common.js
+// ---------------------------------------------------------------------------
+class Atlas {
+  static final palmTree = const Rect.fromLTWH(5, 5, 215, 540);
+  static final billboard08 = const Rect.fromLTWH(230, 5, 385, 265);
+  static final tree1 = const Rect.fromLTWH(625, 5, 360, 360);
+  static final deadTree1 = const Rect.fromLTWH(5, 555, 135, 332);
+  static final billboard09 = const Rect.fromLTWH(150, 555, 328, 282);
+  static final boulder3 = const Rect.fromLTWH(230, 280, 320, 220);
+  static final column = const Rect.fromLTWH(995, 5, 200, 315);
+  static final billboard01 = const Rect.fromLTWH(625, 375, 300, 170);
+  static final billboard06 = const Rect.fromLTWH(488, 555, 298, 190);
+  static final billboard05 = const Rect.fromLTWH(5, 897, 298, 190);
+  static final billboard07 = const Rect.fromLTWH(313, 897, 298, 190);
+  static final boulder2 = const Rect.fromLTWH(621, 897, 298, 140);
+  static final tree2 = const Rect.fromLTWH(1205, 5, 282, 295);
+  static final billboard04 = const Rect.fromLTWH(1205, 310, 268, 170);
+  static final deadTree2 = const Rect.fromLTWH(1205, 490, 150, 260);
+  static final boulder1 = const Rect.fromLTWH(1205, 760, 168, 248);
+  static final bush1 = const Rect.fromLTWH(5, 1097, 240, 155);
+  static final cactus = const Rect.fromLTWH(929, 897, 235, 118);
+  static final bush2 = const Rect.fromLTWH(255, 1097, 232, 152);
+  static final billboard03 = const Rect.fromLTWH(5, 1262, 230, 220);
+  static final billboard02 = const Rect.fromLTWH(245, 1262, 215, 220);
+  static final stump = const Rect.fromLTWH(995, 330, 195, 140);
+  static final semi = const Rect.fromLTWH(1365, 490, 122, 144);
+  static final truck = const Rect.fromLTWH(1365, 644, 100, 78);
+  static final car03 = const Rect.fromLTWH(1383, 760, 88, 55);
+  static final car02 = const Rect.fromLTWH(1383, 825, 80, 59);
+  static final car04 = const Rect.fromLTWH(1383, 894, 80, 57);
+  static final car01 = const Rect.fromLTWH(1205, 1018, 80, 56);
+  static final playerUphillLeft = const Rect.fromLTWH(1383, 961, 80, 45);
+  static final playerUphillStraight = const Rect.fromLTWH(1295, 1018, 80, 45);
+  static final playerUphillRight = const Rect.fromLTWH(1385, 1018, 80, 45);
+  static final playerLeft = const Rect.fromLTWH(995, 480, 80, 41);
+  static final playerStraight = const Rect.fromLTWH(1085, 480, 80, 41);
+  static final playerRight = const Rect.fromLTWH(995, 531, 80, 41);
+
+  static final billboards = [
+    billboard01, billboard02, billboard03, billboard04, billboard05,
+    billboard06, billboard07, billboard08, billboard09,
+  ];
+  static final plants = [
+    tree1, tree2, deadTree1, deadTree2, palmTree, bush1, bush2, cactus,
+    stump, boulder1, boulder2, boulder3,
+  ];
+  static final cars = [car01, car02, car03, car04, semi, truck];
+}
+
+// Background layers within background.png
+class Bg {
+  static final hills = const Rect.fromLTWH(5, 5, 1280, 480);
+  static final sky = const Rect.fromLTWH(5, 495, 1280, 480);
+  static final trees = const Rect.fromLTWH(5, 985, 1280, 480);
+}
+
+// ---------------------------------------------------------------------------
+// Road surface colors
 // ---------------------------------------------------------------------------
 class RoadColors {
   final Color road, grass, rumble, lane;
-  const RoadColors(this.road, this.grass, this.rumble, [this.lane = Colors.transparent]);
+  const RoadColors(this.road, this.grass, this.rumble,
+      [this.lane = Colors.transparent]);
 }
 
-const kColorSky = Color(0xFF72D7EE);
-const kColorTree = Color(0xFF005108);
 const kColorFog = Color(0xFF005108);
-
 const kLight = RoadColors(
     Color(0xFF6B6B6B), Color(0xFF10AA10), Color(0xFF555555), Color(0xFFCCCCCC));
 const kDark =
@@ -59,18 +119,22 @@ const kStartColor = RoadColors(Colors.white, Colors.white, Colors.white);
 const kFinishColor = RoadColors(Colors.black, Colors.black, Colors.black);
 
 // ---------------------------------------------------------------------------
-// Math helpers (Util in original)
+// Math helpers (Util in the original)
 // ---------------------------------------------------------------------------
-double _toInt(double? v, double d) => v ?? d;
 double increase(double start, double inc, double max) {
   double result = start + inc;
-  while (result >= max) result -= max;
-  while (result < 0) result += max;
+  while (result >= max) {
+    result -= max;
+  }
+  while (result < 0) {
+    result += max;
+  }
   return result;
 }
 
 double accelerate(double v, double accel, double dt) => v + accel * dt;
-double limit(double value, double lo, double hi) => math.max(lo, math.min(value, hi));
+double limit(double value, double lo, double hi) =>
+    math.max(lo, math.min(value, hi));
 double interpolate(double a, double b, double percent) => a + (b - a) * percent;
 double easeIn(double a, double b, double p) => a + (b - a) * math.pow(p, 2);
 double easeInOut(double a, double b, double p) =>
@@ -79,7 +143,8 @@ double exponentialFog(double distance, double density) =>
     1 / math.pow(math.e, distance * distance * density);
 double percentRemaining(double n, int total) => (n % total) / total;
 
-bool overlap(double x1, double w1, double x2, double w2, [double percent = 1.0]) {
+bool overlap(double x1, double w1, double x2, double w2,
+    [double percent = 1.0]) {
   final half = percent / 2;
   final min1 = x1 - w1 * half;
   final max1 = x1 + w1 * half;
@@ -108,21 +173,19 @@ void project(P p, double cameraX, double cameraY, double cameraZ,
   p.sw = (p.scale * roadWidth * width / 2);
 }
 
-enum SpriteKind { tree, billboard, boulder }
-
 class RoadSprite {
-  final SpriteKind kind;
+  final Rect src; // atlas rectangle
   final double offset; // in road widths (negative = left)
-  RoadSprite(this.kind, this.offset);
+  RoadSprite(this.src, this.offset);
 }
 
 class Car {
-  double offset; // -1..1 across the road
-  double z; // world z
+  double offset;
+  double z;
   double speed;
   double percent = 0;
-  final Color color;
-  Car(this.offset, this.z, this.speed, this.color);
+  final Rect sprite;
+  Car(this.offset, this.z, this.speed, this.sprite);
 }
 
 class Segment {
@@ -149,7 +212,7 @@ class RacerGame {
 
   double position = 0;
   double speed = 0;
-  double playerX = 0; // -1..1 (offset from center, in road widths)
+  double playerX = 0;
   double playerY = 0;
 
   double skyOffset = 0;
@@ -179,6 +242,10 @@ class RacerGame {
 
   double get lastY => segments.isEmpty ? 0 : segments.last.p2.wy;
 
+  double _randDouble() => rng.nextDouble();
+  int _randInt(int min, int max) => min + rng.nextInt(max - min + 1);
+  T _randChoice<T>(List<T> list) => list[rng.nextInt(list.length)];
+
   void _addSegment(double curve, double y) {
     final n = segments.length;
     final color = (n ~/ kRumbleLength) % 2 == 1 ? kDark : kLight;
@@ -192,11 +259,11 @@ class RacerGame {
 
   void _addRoad(int enter, int hold, int leave, double curve, double y) {
     final startY = lastY;
-    final endY = startY + _toInt(y, 0) * kSegmentLength;
+    final endY = startY + y * kSegmentLength;
     final total = enter + hold + leave;
     for (var n = 0; n < enter; n++) {
-      _addSegment(easeIn(0, curve, n / enter),
-          easeInOut(startY, endY, n / total));
+      _addSegment(
+          easeIn(0, curve, n / enter), easeInOut(startY, endY, n / total));
     }
     for (var n = 0; n < hold; n++) {
       _addSegment(curve, easeInOut(startY, endY, (enter + n) / total));
@@ -207,15 +274,11 @@ class RacerGame {
     }
   }
 
-  // length presets
-  static const lNone = 0, lShort = 25, lMedium = 50, lLong = 100;
-  // curve presets
+  static const lShort = 25, lMedium = 50, lLong = 100;
   static const cNone = 0.0, cEasy = 2.0, cMedium = 4.0, cHard = 6.0;
-  // hill presets
   static const hNone = 0.0, hLow = 20.0, hMedium = 40.0, hHigh = 60.0;
 
-  void _addStraight([int num = lMedium]) =>
-      _addRoad(num, num, num, 0, 0);
+  void _addStraight([int num = lMedium]) => _addRoad(num, num, num, 0, 0);
   void _addHill([int num = lMedium, double height = hMedium]) =>
       _addRoad(num, num, num, 0, height);
   void _addCurve(
@@ -277,7 +340,6 @@ class RacerGame {
 
     _resetSprites();
 
-    // start/finish line decoration
     for (var n = 0; n < kRumbleLength; n++) {
       _setColor(segments.length - 1 - n, kStartColor);
     }
@@ -297,57 +359,70 @@ class RacerGame {
     segments[index] = s;
   }
 
-  void _addSprite(int index, SpriteKind kind, double offset) {
-    if (index < segments.length) {
-      segments[index].sprites.add(RoadSprite(kind, offset));
+  void _addSprite(int index, Rect src, double offset) {
+    if (index >= 0 && index < segments.length) {
+      segments[index].sprites.add(RoadSprite(src, offset));
     }
   }
 
+  // Ported verbatim from the original resetSprites().
   void _resetSprites() {
-    // billboards along the way
-    _addSprite(20, SpriteKind.billboard, -1.2);
-    _addSprite(40, SpriteKind.billboard, -1.2);
-    _addSprite(60, SpriteKind.billboard, -1.2);
-    _addSprite(80, SpriteKind.billboard, -1.2);
-    _addSprite(100, SpriteKind.billboard, -1.2);
+    _addSprite(20, Atlas.billboard07, -1);
+    _addSprite(40, Atlas.billboard06, -1);
+    _addSprite(60, Atlas.billboard08, -1);
+    _addSprite(80, Atlas.billboard09, -1);
+    _addSprite(100, Atlas.billboard01, -1);
+    _addSprite(120, Atlas.billboard02, -1);
+    _addSprite(140, Atlas.billboard03, -1);
+    _addSprite(160, Atlas.billboard04, -1);
+    _addSprite(180, Atlas.billboard05, -1);
 
-    _addSprite(240, SpriteKind.billboard, -1.1);
-    _addSprite(240, SpriteKind.billboard, 1.1);
+    _addSprite(240, Atlas.billboard07, -1.2);
+    _addSprite(240, Atlas.billboard06, 1.2);
+    _addSprite(segments.length - 25, Atlas.billboard07, -1.2);
+    _addSprite(segments.length - 25, Atlas.billboard06, 1.2);
 
-    // dense trees near start
     for (var n = 10; n < 200; n += 4 + (n ~/ 100)) {
-      _addSprite(n, SpriteKind.tree, 1 + rng.nextDouble() * 2);
-      _addSprite(n, SpriteKind.tree, -1 - rng.nextDouble() * 2);
+      _addSprite(n, Atlas.palmTree, 0.5 + _randDouble() * 0.5);
+      _addSprite(n, Atlas.palmTree, 1 + _randDouble() * 2);
     }
 
-    // scattered trees / boulders rest of the track
-    for (var n = 250; n < segments.length - 50; n += 3) {
-      _addSprite(
-          n,
-          rng.nextBool() ? SpriteKind.tree : SpriteKind.boulder,
-          (rng.nextBool() ? 1 : -1) * (1.2 + rng.nextDouble() * 3));
+    for (var n = 250; n < 1000; n += 5) {
+      _addSprite(n, Atlas.column, 1.1);
+      _addSprite(n + _randInt(0, 5), Atlas.tree1, -1 - (_randDouble() * 2));
+      _addSprite(n + _randInt(0, 5), Atlas.tree2, -1 - (_randDouble() * 2));
+    }
+
+    for (var n = 200; n < segments.length; n += 3) {
+      _addSprite(n, _randChoice(Atlas.plants),
+          _randChoice([1.0, -1.0]) * (2 + _randDouble() * 5));
+    }
+
+    for (var n = 1000; n < segments.length - 50; n += 100) {
+      final side = _randChoice([1.0, -1.0]);
+      _addSprite(n + _randInt(0, 50), _randChoice(Atlas.billboards), -side);
+      for (var i = 0; i < 20; i++) {
+        final sprite = _randChoice(Atlas.plants);
+        final offset = side * (1.5 + _randDouble());
+        _addSprite(n + _randInt(0, 50), sprite, offset);
+      }
     }
   }
 
+  // Ported verbatim from the original resetCars().
   void _resetCars() {
     cars.clear();
     for (final s in segments) {
       s.cars.clear();
     }
-    const totalCars = 100;
-    final palette = [
-      const Color(0xFFE53935),
-      const Color(0xFF1E88E5),
-      const Color(0xFFFDD835),
-      const Color(0xFF8E24AA),
-      const Color(0xFFFB8C00),
-      const Color(0xFF00ACC1),
-    ];
+    const totalCars = 200;
     for (var n = 0; n < totalCars; n++) {
-      final offset = rng.nextDouble() * 2 - 1; // -1..1, biased later
+      final offset = _randDouble() * _randChoice([-0.8, 0.8]);
       final z = (rng.nextInt(segments.length) * kSegmentLength).toDouble();
-      final speed = kMaxSpeed / 4 + rng.nextDouble() * kMaxSpeed / 2;
-      final car = Car(offset * 0.8, z, speed, palette[n % palette.length]);
+      final sprite = _randChoice(Atlas.cars);
+      final speed = kMaxSpeed / 4 +
+          _randDouble() * kMaxSpeed / (sprite == Atlas.semi ? 4 : 2);
+      final car = Car(offset, z, speed, sprite);
       cars.add(car);
       findSegment(z).cars.add(car);
     }
@@ -382,12 +457,11 @@ class RacerGame {
       speed = accelerate(speed, kDecel, dt);
     }
 
-    // off-road
     offRoad = (playerX < -1 || playerX > 1) && speed > kOffRoadLimit / 2;
     if ((playerX < -1 || playerX > 1) && speed > kOffRoadLimit) {
       speed = accelerate(speed, kOffRoadDecel, dt);
       for (final sprite in playerSegment.sprites) {
-        final spriteW = _spriteWidth(sprite.kind) * kSpriteScale;
+        final spriteW = sprite.src.width * kSpriteScale;
         if (overlap(
             playerX,
             playerW,
@@ -402,9 +476,8 @@ class RacerGame {
       }
     }
 
-    // car collisions
     for (final car in playerSegment.cars) {
-      final carW = 80 * kSpriteScale;
+      final carW = car.sprite.width * kSpriteScale;
       if (speed > car.speed &&
           overlap(playerX, playerW, car.offset, carW, 0.8)) {
         speed = car.speed * (car.speed / speed);
@@ -417,11 +490,12 @@ class RacerGame {
     playerX = limit(playerX, -3, 3);
     speed = limit(speed, 0, kMaxSpeed);
 
-    // parallax + lap timing
     final delta = (position - startPosition) / kSegmentLength;
-    skyOffset = increase(skyOffset, 0.001 * playerSegment.curve * delta, 1);
-    hillOffset = increase(hillOffset, 0.002 * playerSegment.curve * delta, 1);
-    treeOffset = increase(treeOffset, 0.003 * playerSegment.curve * delta, 1);
+    skyOffset = increase(skyOffset, kSkySpeed * playerSegment.curve * delta, 1);
+    hillOffset =
+        increase(hillOffset, kHillSpeed * playerSegment.curve * delta, 1);
+    treeOffset =
+        increase(treeOffset, kTreeSpeed * playerSegment.curve * delta, 1);
 
     if (position > kPlayerZ) {
       if (currentLapTime > 0 && startPosition < kPlayerZ) {
@@ -453,10 +527,9 @@ class RacerGame {
 
   double _updateCarOffset(
       Car car, Segment carSegment, Segment playerSegment, double playerW) {
-    final lookahead = 20;
-    final carW = 80 * kSpriteScale;
+    const lookahead = 20;
+    final carW = car.sprite.width * kSpriteScale;
 
-    // avoid the player if on the same line of sight
     if ((carSegment.index - playerSegment.index).abs() > kDrawDistance) {
       return 0;
     }
@@ -479,28 +552,17 @@ class RacerGame {
       }
 
       for (final otherCar in segment.cars) {
+        final otherCarW = otherCar.sprite.width * kSpriteScale;
         if (car.speed > otherCar.speed &&
-            overlap(car.offset, carW, otherCar.offset, carW, 1.2)) {
+            overlap(car.offset, carW, otherCar.offset, otherCarW, 1.2)) {
           final dir = otherCar.offset > car.offset ? -1 : 1;
           return dir / i * (car.speed - otherCar.speed) / kMaxSpeed;
         }
       }
     }
-    // pull back toward the road if off it
     if (car.offset < -0.9) return 0.1;
     if (car.offset > 0.9) return -0.1;
     return 0;
-  }
-
-  double _spriteWidth(SpriteKind kind) {
-    switch (kind) {
-      case SpriteKind.tree:
-        return 150;
-      case SpriteKind.billboard:
-        return 220;
-      case SpriteKind.boulder:
-        return 100;
-    }
   }
 
   void reset() {
@@ -533,6 +595,9 @@ class _RacerScreenState extends State<RacerScreen>
   final FocusNode _focus = FocusNode();
   bool _audioStarted = false;
 
+  ui.Image? _sprites;
+  ui.Image? _background;
+
   void _ensureAudio() {
     if (!_audioStarted) {
       _audioStarted = true;
@@ -543,8 +608,27 @@ class _RacerScreenState extends State<RacerScreen>
   @override
   void initState() {
     super.initState();
+    _loadImages();
     _ticker = createTicker(_onTick)..start();
     WidgetsBinding.instance.addPostFrameCallback((_) => _focus.requestFocus());
+  }
+
+  Future<void> _loadImages() async {
+    final s = await _loadImage('assets/sprites.png');
+    final b = await _loadImage('assets/background.png');
+    if (mounted) {
+      setState(() {
+        _sprites = s;
+        _background = b;
+      });
+    }
+  }
+
+  Future<ui.Image> _loadImage(String path) async {
+    final data = await rootBundle.load(path);
+    final codec = await ui.instantiateImageCodec(data.buffer.asUint8List());
+    final frame = await codec.getNextFrame();
+    return frame.image;
   }
 
   void _onTick(Duration now) {
@@ -554,7 +638,7 @@ class _RacerScreenState extends State<RacerScreen>
     }
     var frame = (now - _last).inMicroseconds / 1e6;
     _last = now;
-    if (frame > 0.1) frame = 0.1; // clamp big stalls
+    if (frame > 0.1) frame = 0.1;
     _accumulator += frame;
     while (_accumulator >= kStep) {
       game.update(kStep);
@@ -612,19 +696,15 @@ class _RacerScreenState extends State<RacerScreen>
             _focus.requestFocus();
           },
           child: Stack(
-          children: [
-            Positioned.fill(
-              child: CustomPaint(painter: RoadPainter(game)),
-            ),
-            // HUD
-            Positioned(
-              top: 16,
-              left: 16,
-              child: _Hud(game: game),
-            ),
-            // touch controls
-            Positioned.fill(child: _TouchControls(game: game)),
-          ],
+            children: [
+              Positioned.fill(
+                child: CustomPaint(
+                  painter: RoadPainter(game, _sprites, _background),
+                ),
+              ),
+              Positioned(top: 16, left: 16, child: _Hud(game: game)),
+              Positioned.fill(child: _TouchControls(game: game)),
+            ],
           ),
         ),
       ),
@@ -664,10 +744,12 @@ class _Hud extends StatelessWidget {
                     color: Colors.yellowAccent,
                     fontSize: 22,
                     fontWeight: FontWeight.bold)),
-            Text('LAP $kLapsHint  •  Lap ${game.lap}'),
+            Text('Lap ${game.lap}'),
             Text('Time   ${_fmt(game.currentLapTime)}'),
-            Text('Last   ${game.lastLapTime == 0 ? "--:--.--" : _fmt(game.lastLapTime)}'),
-            Text('Best   ${game.bestLapTime == 0 ? "--:--.--" : _fmt(game.bestLapTime)}'),
+            Text(
+                'Last   ${game.lastLapTime == 0 ? "--:--.--" : _fmt(game.lastLapTime)}'),
+            Text(
+                'Best   ${game.bestLapTime == 0 ? "--:--.--" : _fmt(game.bestLapTime)}'),
           ],
         ),
       ),
@@ -675,88 +757,50 @@ class _Hud extends StatelessWidget {
   }
 }
 
-const String kLapsHint = '∞';
-
 class _TouchControls extends StatelessWidget {
   final RacerGame game;
   const _TouchControls({required this.game});
 
-  Widget _pad(IconData icon, void Function(bool) set, Alignment a) {
-    return Align(
-      alignment: a,
-      child: Padding(
-        padding: const EdgeInsets.all(18),
-        child: Listener(
-          onPointerDown: (_) => set(true),
-          onPointerUp: (_) => set(false),
-          onPointerCancel: (_) => set(false),
-          child: Container(
-            width: 74,
-            height: 74,
-            decoration: BoxDecoration(
-              color: Colors.white24,
-              shape: BoxShape.circle,
-              border: Border.all(color: Colors.white38, width: 2),
-            ),
-            child: Icon(icon, size: 38, color: Colors.white),
-          ),
+  Widget _btn(IconData icon, void Function(bool) set, Color color) {
+    return Listener(
+      onPointerDown: (_) => set(true),
+      onPointerUp: (_) => set(false),
+      onPointerCancel: (_) => set(false),
+      child: Container(
+        width: 74,
+        height: 74,
+        decoration: BoxDecoration(
+          color: color,
+          shape: BoxShape.circle,
+          border: Border.all(color: Colors.white38, width: 2),
         ),
+        child: Icon(icon, size: 40, color: Colors.white),
       ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    return Stack(
-      children: [
-        _pad(Icons.arrow_left, (v) => game.keyLeft = v, Alignment.bottomLeft),
-        Align(
-          alignment: Alignment.bottomLeft,
-          child: Padding(
-            padding: const EdgeInsets.only(left: 110, bottom: 18),
-            child: Listener(
-              onPointerDown: (_) => game.keyRight = true,
-              onPointerUp: (_) => game.keyRight = false,
-              onPointerCancel: (_) => game.keyRight = false,
-              child: Container(
-                width: 74,
-                height: 74,
-                decoration: BoxDecoration(
-                  color: Colors.white24,
-                  shape: BoxShape.circle,
-                  border: Border.all(color: Colors.white38, width: 2),
-                ),
-                child: const Icon(Icons.arrow_right,
-                    size: 38, color: Colors.white),
-              ),
-            ),
-          ),
-        ),
-        _pad(Icons.keyboard_arrow_down, (v) => game.keySlower = v,
-            Alignment.bottomRight),
-        Align(
-          alignment: Alignment.bottomRight,
-          child: Padding(
-            padding: const EdgeInsets.only(right: 110, bottom: 18),
-            child: Listener(
-              onPointerDown: (_) => game.keyFaster = true,
-              onPointerUp: (_) => game.keyFaster = false,
-              onPointerCancel: (_) => game.keyFaster = false,
-              child: Container(
-                width: 74,
-                height: 74,
-                decoration: BoxDecoration(
-                  color: Colors.greenAccent.withOpacity(0.25),
-                  shape: BoxShape.circle,
-                  border: Border.all(color: Colors.white38, width: 2),
-                ),
-                child: const Icon(Icons.keyboard_arrow_up,
-                    size: 42, color: Colors.white),
-              ),
-            ),
-          ),
-        ),
-      ],
+    return Padding(
+      padding: const EdgeInsets.all(18),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          Row(children: [
+            _btn(Icons.arrow_left, (v) => game.keyLeft = v, Colors.white24),
+            const SizedBox(width: 14),
+            _btn(Icons.arrow_right, (v) => game.keyRight = v, Colors.white24),
+          ]),
+          Row(children: [
+            _btn(Icons.keyboard_arrow_down, (v) => game.keySlower = v,
+                Colors.white24),
+            const SizedBox(width: 14),
+            _btn(Icons.keyboard_arrow_up, (v) => game.keyFaster = v,
+                Colors.greenAccent.withOpacity(0.25)),
+          ]),
+        ],
+      ),
     );
   }
 }
@@ -766,13 +810,16 @@ class _TouchControls extends StatelessWidget {
 // ---------------------------------------------------------------------------
 class RoadPainter extends CustomPainter {
   final RacerGame game;
-  RoadPainter(this.game);
+  final ui.Image? sprites;
+  final ui.Image? background;
+  RoadPainter(this.game, this.sprites, this.background);
 
   @override
   void paint(Canvas canvas, Size size) {
     final width = size.width;
     final height = size.height;
     final g = game;
+    final resolution = height / 480.0;
 
     final baseSegment = g.findSegment(g.position);
     final basePercent = percentRemaining(g.position, kSegmentLength);
@@ -787,23 +834,19 @@ class RoadPainter extends CustomPainter {
     double x = 0;
     double dx = -(baseSegment.curve * basePercent);
 
-    _drawBackground(canvas, size, playerY);
+    _drawBackground(canvas, width, height, resolution, playerY);
 
     final paint = Paint()..isAntiAlias = false;
 
-    // road
     for (var n = 0; n < kDrawDistance; n++) {
-      final segment =
-          g.segments[(baseSegment.index + n) % g.segments.length];
+      final segment = g.segments[(baseSegment.index + n) % g.segments.length];
       segment.looped = segment.index < baseSegment.index;
       segment.fog = exponentialFog(n / kDrawDistance, kFogDensity);
       segment.clip = maxy;
 
-      final camOffsetZ =
-          g.position - (segment.looped ? g.trackLength : 0);
-      project(segment.p1, (g.playerX * kRoadWidth) - x,
-          playerY + kCameraHeight, camOffsetZ, kCameraDepth, width, height,
-          kRoadWidth);
+      final camOffsetZ = g.position - (segment.looped ? g.trackLength : 0);
+      project(segment.p1, (g.playerX * kRoadWidth) - x, playerY + kCameraHeight,
+          camOffsetZ, kCameraDepth, width, height, kRoadWidth);
       project(segment.p2, (g.playerX * kRoadWidth) - x - dx,
           playerY + kCameraHeight, camOffsetZ, kCameraDepth, width, height,
           kRoadWidth);
@@ -817,17 +860,16 @@ class RoadPainter extends CustomPainter {
         continue;
       }
 
-      _renderSegment(
-          canvas, paint, width, segment.p1, segment.p2, segment.fog,
+      _renderSegment(canvas, paint, width, segment.p1, segment.p2, segment.fog,
           segment.color);
 
       maxy = segment.p2.sy;
     }
 
     // sprites & cars, back to front
+    final imgPaint = Paint()..filterQuality = FilterQuality.low;
     for (var n = kDrawDistance - 1; n > 0; n--) {
-      final segment =
-          g.segments[(baseSegment.index + n) % g.segments.length];
+      final segment = g.segments[(baseSegment.index + n) % g.segments.length];
 
       for (final car in segment.cars) {
         final spriteScale =
@@ -836,8 +878,8 @@ class RoadPainter extends CustomPainter {
             (spriteScale * car.offset * kRoadWidth * width / 2);
         final spriteY =
             interpolate(segment.p1.sy, segment.p2.sy, car.percent);
-        _renderCar(canvas, width, height, spriteScale, spriteX, spriteY,
-            segment.clip, car.color);
+        _renderSprite(canvas, imgPaint, width, height, car.sprite, spriteScale,
+            spriteX, spriteY, -0.5, -1, segment.clip);
       }
 
       for (final sprite in segment.sprites) {
@@ -845,61 +887,57 @@ class RoadPainter extends CustomPainter {
         final spriteX = segment.p1.sx +
             (spriteScale * sprite.offset * kRoadWidth * width / 2);
         final spriteY = segment.p1.sy;
-        _renderSprite(canvas, width, height, sprite, spriteScale, spriteX,
-            spriteY, sprite.offset < 0 ? -1 : 0, segment.clip);
+        _renderSprite(canvas, imgPaint, width, height, sprite.src, spriteScale,
+            spriteX, spriteY, sprite.offset < 0 ? -1 : 0, -1, segment.clip);
       }
 
       if (segment == playerSegment) {
-        _renderPlayer(canvas, width, height, g.speed / kMaxSpeed, playerSegment);
+        _renderPlayer(canvas, imgPaint, width, height, resolution,
+            g.speed / kMaxSpeed, playerSegment, playerPercent);
       }
     }
   }
 
   // ---- background -------------------------------------------------------
-  void _drawBackground(Canvas canvas, Size size, double playerY) {
-    final w = size.width, h = size.height;
-    final horizon = h * 0.5;
-
-    // sky gradient
-    final sky = Paint()
-      ..shader = const LinearGradient(
-        begin: Alignment.topCenter,
-        end: Alignment.bottomCenter,
-        colors: [Color(0xFF52B8E8), kColorSky, Color(0xFFBDEBF7)],
-      ).createShader(Rect.fromLTWH(0, 0, w, horizon + 40));
-    canvas.drawRect(Rect.fromLTWH(0, 0, w, horizon + 40), sky);
-
-    // sun
-    canvas.drawCircle(
-        Offset(w * (0.5 + (game.skyOffset - 0.5) * 0.4), horizon * 0.45),
-        h * 0.06,
-        Paint()..color = const Color(0xFFFFF3B0));
-
-    // distant hills (parallax)
-    final hillShift = (game.hillOffset - 0.5) * w * 2;
-    final hillBase = horizon + 6 - playerY * 0.001 * h;
-    final hills = Paint()..color = const Color(0xFF2E8B57);
-    final hp = Path();
-    hp.moveTo(0, hillBase);
-    for (var i = -1; i <= 6; i++) {
-      final cx = w * i / 5 - (hillShift % (w / 5)) - 40;
-      hp.quadraticBezierTo(
-          cx + w / 10, hillBase - h * 0.10, cx + w / 5, hillBase);
+  void _drawBackground(
+      Canvas canvas, double w, double h, double resolution, double playerY) {
+    if (background == null) {
+      canvas.drawRect(
+          Rect.fromLTWH(0, 0, w, h), Paint()..color = const Color(0xFF72D7EE));
+      return;
     }
-    hp.lineTo(w, hillBase + 40);
-    hp.lineTo(0, hillBase + 40);
-    hp.close();
-    canvas.drawPath(hp, hills);
+    final p = Paint()..filterQuality = FilterQuality.low;
+    _bgLayer(canvas, w, h, Bg.sky, game.skyOffset,
+        resolution * kSkySpeed * playerY, p);
+    _bgLayer(canvas, w, h, Bg.hills, game.hillOffset,
+        resolution * kHillSpeed * playerY, p);
+    _bgLayer(canvas, w, h, Bg.trees, game.treeOffset,
+        resolution * kTreeSpeed * playerY, p);
+  }
 
-    // treeline band
-    final treeY = horizon + 2 - playerY * 0.001 * h;
-    canvas.drawRect(
-        Rect.fromLTWH(0, treeY, w, 8), Paint()..color = kColorTree);
-
-    // grass below horizon (will be mostly overdrawn by road grass polys,
-    // but fills gaps at the very bottom)
-    canvas.drawRect(Rect.fromLTWH(0, horizon, w, h - horizon),
-        Paint()..color = kLight.grass);
+  void _bgLayer(Canvas c, double w, double h, Rect layer, double rotation,
+      double offset, Paint p) {
+    final imageW = layer.width / 2;
+    final imageH = layer.height;
+    final sourceX = layer.left + (layer.width * rotation).floorToDouble();
+    final sourceY = layer.top;
+    final sourceW = math.min(imageW, layer.left + layer.width - sourceX);
+    final sourceH = imageH;
+    final destY = offset;
+    final destW = w * (sourceW / imageW);
+    final destH = h;
+    c.drawImageRect(
+        background!,
+        Rect.fromLTWH(sourceX, sourceY, sourceW, sourceH),
+        Rect.fromLTWH(0, destY, destW, destH),
+        p);
+    if (sourceW < imageW) {
+      c.drawImageRect(
+          background!,
+          Rect.fromLTWH(layer.left, sourceY, imageW - sourceW, sourceH),
+          Rect.fromLTWH(destW - 1, destY, w - destW, destH),
+          p);
+    }
   }
 
   // ---- road segment -----------------------------------------------------
@@ -910,23 +948,19 @@ class RoadPainter extends CustomPainter {
     final l1 = _laneMarkerWidth(p1.sw);
     final l2 = _laneMarkerWidth(p2.sw);
 
-    // grass spans full width
     paint.color = color.grass;
     canvas.drawRect(Rect.fromLTRB(0, p2.sy, width, p1.sy), paint);
 
-    // rumble strips
     paint.color = color.rumble;
     _poly(canvas, paint, p1.sx - p1.sw - r1, p1.sy, p1.sx - p1.sw, p1.sy,
         p2.sx - p2.sw, p2.sy, p2.sx - p2.sw - r2, p2.sy);
     _poly(canvas, paint, p1.sx + p1.sw + r1, p1.sy, p1.sx + p1.sw, p1.sy,
         p2.sx + p2.sw, p2.sy, p2.sx + p2.sw + r2, p2.sy);
 
-    // road
     paint.color = color.road;
     _poly(canvas, paint, p1.sx - p1.sw, p1.sy, p1.sx + p1.sw, p1.sy,
         p2.sx + p2.sw, p2.sy, p2.sx - p2.sw, p2.sy);
 
-    // lane markers
     if (color.lane != Colors.transparent) {
       paint.color = color.lane;
       final lanew1 = p1.sw * 2 / kLanes;
@@ -941,17 +975,14 @@ class RoadPainter extends CustomPainter {
       }
     }
 
-    // fog
     if (fog < 1) {
       paint.color = kColorFog.withOpacity(1 - fog);
       canvas.drawRect(Rect.fromLTRB(0, p2.sy, width, p1.sy), paint);
     }
   }
 
-  double _rumbleWidth(double projectedRoadWidth) =>
-      projectedRoadWidth / (kLanes + 2);
-  double _laneMarkerWidth(double projectedRoadWidth) =>
-      projectedRoadWidth / (kLanes * 8);
+  double _rumbleWidth(double w) => w / (kLanes + 2);
+  double _laneMarkerWidth(double w) => w / (kLanes * 8);
 
   void _poly(Canvas canvas, Paint paint, double x1, double y1, double x2,
       double y2, double x3, double y3, double x4, double y4) {
@@ -964,213 +995,51 @@ class RoadPainter extends CustomPainter {
     canvas.drawPath(path, paint);
   }
 
-  // ---- sprites ----------------------------------------------------------
-  void _renderSprite(Canvas canvas, double width, double height,
-      RoadSprite sprite, double scale, double destX, double destY,
-      double offsetX, double clipY) {
-    final logicalW = game._spriteWidth(sprite.kind);
-    final logicalH = logicalW * (sprite.kind == SpriteKind.tree ? 1.4 : 1.0);
-    final destW = logicalW * scale * width / 2 * (kSpriteScale * kRoadWidth);
-    final destH = logicalH * scale * width / 2 * (kSpriteScale * kRoadWidth);
-    var dx = destX + destW * offsetX;
-    final dy = destY - destH; // sit on the ground
+  // ---- atlas sprite (Render.sprite) -------------------------------------
+  void _renderSprite(Canvas canvas, Paint paint, double width, double height,
+      Rect src, double scale, double destX, double destY, double offsetX,
+      double offsetY, double clipY) {
+    if (sprites == null) return;
+    final destW = (src.width * scale * width / 2) * (kSpriteScale * kRoadWidth);
+    final destH = (src.height * scale * width / 2) * (kSpriteScale * kRoadWidth);
+    final dx = destX + destW * offsetX;
+    final dy = destY + destH * offsetY;
+    if (destW < 0.5) return;
     final clipH = clipY > 0 ? math.max(0.0, dy + destH - clipY) : 0.0;
     if (clipH >= destH) return;
-    if (destW < 0.5) return;
-
-    final rect = Rect.fromLTWH(dx, dy, destW, destH - clipH);
-    canvas.save();
-    canvas.clipRect(rect);
-    switch (sprite.kind) {
-      case SpriteKind.tree:
-        _drawTree(canvas, dx, dy, destW, destH);
-        break;
-      case SpriteKind.billboard:
-        _drawBillboard(canvas, dx, dy, destW, destH);
-        break;
-      case SpriteKind.boulder:
-        _drawBoulder(canvas, dx, dy, destW, destH);
-        break;
-    }
-    canvas.restore();
+    canvas.drawImageRect(
+        sprites!,
+        Rect.fromLTWH(src.left, src.top, src.width, src.height - src.height * clipH / destH),
+        Rect.fromLTWH(dx, dy, destW, destH - clipH),
+        paint);
   }
 
-  void _drawTree(Canvas c, double x, double y, double w, double h) {
-    final trunk = Paint()..color = const Color(0xFF5D3A1A);
-    final tw = w * 0.16;
-    c.drawRect(
-        Rect.fromLTWH(x + w / 2 - tw / 2, y + h * 0.65, tw, h * 0.35), trunk);
-    final leaf = Paint()..color = const Color(0xFF1B7A1B);
-    for (var i = 0; i < 3; i++) {
-      final ty = y + h * (0.05 + i * 0.22);
-      final th = h * 0.42;
-      final tipW = w * (1 - i * 0.18);
-      final path = Path()
-        ..moveTo(x + w / 2, ty)
-        ..lineTo(x + w / 2 - tipW / 2, ty + th)
-        ..lineTo(x + w / 2 + tipW / 2, ty + th)
-        ..close();
-      c.drawPath(path, leaf);
-    }
-  }
-
-  void _drawBillboard(Canvas c, double x, double y, double w, double h) {
-    final post = Paint()..color = const Color(0xFF7A5230);
-    c.drawRect(Rect.fromLTWH(x + w * 0.45, y + h * 0.5, w * 0.1, h * 0.5), post);
-    final board = Rect.fromLTWH(x, y, w, h * 0.55);
-    c.drawRect(board, Paint()..color = const Color(0xFFD32F2F));
-    c.drawRect(
-        board.deflate(w * 0.04),
-        Paint()..color = Colors.white);
-    final txt = Paint()..color = const Color(0xFF1565C0);
-    c.drawRect(
-        Rect.fromLTWH(x + w * 0.12, y + h * 0.12, w * 0.76, h * 0.06), txt);
-    c.drawRect(
-        Rect.fromLTWH(x + w * 0.12, y + h * 0.26, w * 0.5, h * 0.06), txt);
-  }
-
-  void _drawBoulder(Canvas c, double x, double y, double w, double h) {
-    final p = Paint()..color = const Color(0xFF7E7E7E);
-    final path = Path()
-      ..moveTo(x + w * 0.1, y + h)
-      ..lineTo(x + w * 0.0, y + h * 0.5)
-      ..lineTo(x + w * 0.3, y + h * 0.15)
-      ..lineTo(x + w * 0.7, y + h * 0.1)
-      ..lineTo(x + w, y + h * 0.55)
-      ..lineTo(x + w * 0.9, y + h)
-      ..close();
-    c.drawPath(path, p);
-    c.drawPath(path, Paint()
-      ..color = const Color(0xFF5A5A5A)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = w * 0.03);
-  }
-
-  // ---- traffic car ------------------------------------------------------
-  void _renderCar(Canvas canvas, double width, double height, double scale,
-      double destX, double destY, double clipY, Color color) {
-    const logicalW = 80.0, logicalH = 56.0;
-    final destW = logicalW * scale * width / 2 * (kSpriteScale * kRoadWidth);
-    final destH = logicalH * scale * width / 2 * (kSpriteScale * kRoadWidth);
-    if (destW < 0.5) return;
-    final dx = destX - destW / 2;
-    final dy = destY - destH;
-    final clipH = clipY > 0 ? math.max(0.0, dy + destH - clipY) : 0.0;
-    if (clipH >= destH) return;
-    final rect = Rect.fromLTWH(dx, dy, destW, destH - clipH);
-    canvas.save();
-    canvas.clipRect(rect);
-    _drawCarShape(canvas, dx, dy, destW, destH, color);
-    canvas.restore();
-  }
-
-  void _drawCarShape(
-      Canvas c, double x, double y, double w, double h, Color color) {
-    // shadow
-    c.drawOval(
-        Rect.fromLTWH(x, y + h * 0.82, w, h * 0.3),
-        Paint()..color = Colors.black.withOpacity(0.25));
-    // body
-    final body = Paint()..color = color;
-    c.drawRRect(
-        RRect.fromRectAndRadius(
-            Rect.fromLTWH(x + w * 0.05, y + h * 0.35, w * 0.9, h * 0.55),
-            Radius.circular(w * 0.08)),
-        body);
-    // cabin
-    c.drawRRect(
-        RRect.fromRectAndRadius(
-            Rect.fromLTWH(x + w * 0.2, y + h * 0.1, w * 0.6, h * 0.4),
-            Radius.circular(w * 0.06)),
-        Paint()..color = color.withOpacity(0.85));
-    // rear window
-    c.drawRect(
-        Rect.fromLTWH(x + w * 0.28, y + h * 0.16, w * 0.44, h * 0.22),
-        Paint()..color = const Color(0xFF223344));
-    // tail lights
-    final light = Paint()..color = const Color(0xFFFFCC33);
-    c.drawRect(Rect.fromLTWH(x + w * 0.08, y + h * 0.5, w * 0.1, h * 0.14),
-        light);
-    c.drawRect(Rect.fromLTWH(x + w * 0.82, y + h * 0.5, w * 0.1, h * 0.14),
-        light);
-    // wheels
-    final tire = Paint()..color = const Color(0xFF111111);
-    c.drawRect(Rect.fromLTWH(x + w * 0.06, y + h * 0.78, w * 0.18, h * 0.2),
-        tire);
-    c.drawRect(Rect.fromLTWH(x + w * 0.76, y + h * 0.78, w * 0.18, h * 0.2),
-        tire);
-  }
-
-  // ---- player car -------------------------------------------------------
-  void _renderPlayer(Canvas canvas, double width, double height,
-      double speedPercent, Segment playerSegment) {
+  // ---- player car (Render.player) ---------------------------------------
+  void _renderPlayer(Canvas canvas, Paint paint, double width, double height,
+      double resolution, double speedPercent, Segment playerSegment,
+      double playerPercent) {
     final g = game;
-    final bounce = 1.5 * speedPercent * math.sin(g.position * 0.05);
-    final steer = g.keyLeft ? -1 : (g.keyRight ? 1 : 0);
+    final bounce =
+        1.5 * speedPercent * resolution * math.sin(g.position * 0.1);
     final updown = playerSegment.p2.wy - playerSegment.p1.wy;
+    final steer = g.keyLeft ? -1 : (g.keyRight ? 1 : 0);
 
-    const logicalW = 90.0, logicalH = 60.0;
-    // scale similar to a nearby segment
+    Rect src;
+    if (steer < 0) {
+      src = updown > 0 ? Atlas.playerUphillLeft : Atlas.playerLeft;
+    } else if (steer > 0) {
+      src = updown > 0 ? Atlas.playerUphillRight : Atlas.playerRight;
+    } else {
+      src = updown > 0 ? Atlas.playerUphillStraight : Atlas.playerStraight;
+    }
+
     final scale = kCameraDepth / kPlayerZ;
-    final destW = logicalW * scale * width / 2 * (kSpriteScale * kRoadWidth);
-    final destH = logicalH * scale * width / 2 * (kSpriteScale * kRoadWidth);
-
+    final camY =
+        interpolate(playerSegment.p1.cy, playerSegment.p2.cy, playerPercent);
     final destX = width / 2;
-    final destY = height - destH * 0.5 - 10 + bounce;
-
-    canvas.save();
-    canvas.translate(destX, destY);
-    _drawPlayerCar(
-        canvas, destW, destH, steer, speedPercent, updown);
-    canvas.restore();
-  }
-
-  void _drawPlayerCar(Canvas c, double w, double h, int steer,
-      double speedPercent, double updown) {
-    final x = -w / 2;
-    final y = -h / 2;
-    // shadow
-    c.drawOval(Rect.fromLTWH(x, y + h * 0.8, w, h * 0.35),
-        Paint()..color = Colors.black.withOpacity(0.3));
-    // body
-    final body = Paint()..color = const Color(0xFFE53935);
-    c.drawRRect(
-        RRect.fromRectAndRadius(
-            Rect.fromLTWH(x, y + h * 0.25, w, h * 0.65),
-            Radius.circular(w * 0.07)),
-        body);
-    // cabin
-    c.drawRRect(
-        RRect.fromRectAndRadius(
-            Rect.fromLTWH(x + w * 0.2 + steer * w * 0.03, y, w * 0.6, h * 0.45),
-            Radius.circular(w * 0.06)),
-        Paint()..color = const Color(0xFFEF5350));
-    // rear window
-    c.drawRect(
-        Rect.fromLTWH(x + w * 0.27 + steer * w * 0.03, y + h * 0.06,
-            w * 0.46, h * 0.26),
-        Paint()..color = const Color(0xFF1A2A3A));
-    // spoiler
-    c.drawRect(Rect.fromLTWH(x - w * 0.03, y + h * 0.22, w * 1.06, h * 0.08),
-        Paint()..color = const Color(0xFF222222));
-    // tail lights
-    final light = Paint()..color = const Color(0xFFFFEB3B);
-    c.drawRect(Rect.fromLTWH(x + w * 0.05, y + h * 0.45, w * 0.12, h * 0.16),
-        light);
-    c.drawRect(Rect.fromLTWH(x + w * 0.83, y + h * 0.45, w * 0.12, h * 0.16),
-        light);
-    // wheels
-    final tire = Paint()..color = const Color(0xFF0A0A0A);
-    c.drawRRect(
-        RRect.fromRectAndRadius(
-            Rect.fromLTWH(x + w * 0.02, y + h * 0.78, w * 0.2, h * 0.26),
-            Radius.circular(w * 0.03)),
-        tire);
-    c.drawRRect(
-        RRect.fromRectAndRadius(
-            Rect.fromLTWH(x + w * 0.78, y + h * 0.78, w * 0.2, h * 0.26),
-            Radius.circular(w * 0.03)),
-        tire);
+    final destY = (height / 2) - (scale * camY * height / 2) + bounce;
+    _renderSprite(
+        canvas, paint, width, height, src, scale, destX, destY, -0.5, -1, 0);
   }
 
   @override

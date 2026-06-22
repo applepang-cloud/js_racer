@@ -7,7 +7,7 @@ void main() {
   test('road builds with traffic', () {
     final game = RacerGame();
     expect(game.segments.length, greaterThan(500));
-    expect(game.cars.length, 100);
+    expect(game.cars.length, 200);
     expect(game.trackLength, game.segments.length * kSegmentLength);
   });
 
