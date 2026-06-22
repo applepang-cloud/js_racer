@@ -32,6 +32,20 @@
   <title>JS Racer</title>
   <link rel="manifest" href="manifest.json">
   <script src="engine_audio.js"></script>
+  <script>
+    // Clean up any previously-installed Flutter service worker + caches.
+    // (A stale SW was serving an outdated build; this app ships without one.)
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistrations().then(function (rs) {
+        rs.forEach(function (r) { r.unregister(); });
+      }).catch(function () {});
+    }
+    if (window.caches && caches.keys) {
+      caches.keys().then(function (ks) {
+        ks.forEach(function (k) { caches.delete(k); });
+      }).catch(function () {});
+    }
+  </script>
 </head>
 <body>
   <!--
