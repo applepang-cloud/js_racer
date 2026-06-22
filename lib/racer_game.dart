@@ -5,13 +5,15 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'engine_audio.dart';
 
-/// A Flutter (CustomPaint) port of Jake Gordon's javascript-racer, extended
-/// with an Out Run-style timed race: a finite track with a start and finish,
-/// a countdown clock, and checkpoints that extend your time.
+/// A faithful Flutter (CustomPaint) port of Jake Gordon's javascript-racer.
 /// https://github.com/jakesgordon/javascript-racer/
+///
+/// Pseudo-3D road projection: curves, hills, rumble strips, lane markings,
+/// exponential fog, parallax background, roadside sprites and traffic.
+/// Graphics use the original game's sprites.png / background.png atlases.
 
 // ---------------------------------------------------------------------------
-// Constants
+// Constants (mirrors the original game's settings)
 // ---------------------------------------------------------------------------
 const double kFps = 60;
 const double kStep = 1 / kFps;
@@ -35,20 +37,12 @@ final double kDecel = -kMaxSpeed / 5;
 final double kOffRoadDecel = -kMaxSpeed / 2;
 final double kOffRoadLimit = kMaxSpeed / 4;
 
+// SPRITES.SCALE = 0.3 * (1 / PLAYER_STRAIGHT.w), PLAYER_STRAIGHT.w == 80
 const double kSpriteScale = 0.3 / 80.0;
 
 const double kSkySpeed = 0.001;
 const double kHillSpeed = 0.002;
 const double kTreeSpeed = 0.003;
-
-// Out Run-style timing
-const double kInitialTime = 45; // seconds on the clock at the start line
-const double kCheckpointBonus = 35; // seconds added per checkpoint
-const int kNumCheckpoints = 4;
-
-const String kMusicUrl = 'assets/assets/racer.mp3';
-
-enum RaceState { racing, finished, timeUp }
 
 // ---------------------------------------------------------------------------
 // Sprite atlas — exact coordinates from the original common.js
@@ -100,6 +94,7 @@ class Atlas {
   static final cars = [car01, car02, car03, car04, semi, truck];
 }
 
+// Background layers within background.png
 class Bg {
   static final hills = const Rect.fromLTWH(5, 5, 1280, 480);
   static final sky = const Rect.fromLTWH(5, 495, 1280, 480);
@@ -162,9 +157,9 @@ bool overlap(double x1, double w1, double x2, double w2,
 // Geometry
 // ---------------------------------------------------------------------------
 class P {
-  double wx = 0, wy = 0, wz = 0;
-  double cx = 0, cy = 0, cz = 0;
-  double sx = 0, sy = 0, sw = 0, scale = 0;
+  double wx = 0, wy = 0, wz = 0; // world
+  double cx = 0, cy = 0, cz = 0; // camera
+  double sx = 0, sy = 0, sw = 0, scale = 0; // screen
 }
 
 void project(P p, double cameraX, double cameraY, double cameraZ,
@@ -179,8 +174,8 @@ void project(P p, double cameraX, double cameraY, double cameraZ,
 }
 
 class RoadSprite {
-  final Rect src;
-  final double offset;
+  final Rect src; // atlas rectangle
+  final double offset; // in road widths (negative = left)
   RoadSprite(this.src, this.offset);
 }
 
@@ -201,7 +196,7 @@ class Segment {
   double fog = 0;
   double clip = 0;
   bool looped = false;
-  RoadColors color;
+  final RoadColors color;
   final List<RoadSprite> sprites = [];
   final List<Car> cars = [];
   Segment(this.index, this.curve, this.color);
@@ -224,28 +219,18 @@ class RacerGame {
   double hillOffset = 0;
   double treeOffset = 0;
 
-  // race state
-  RaceState state = RaceState.racing;
-  double timeLeft = kInitialTime;
-  double totalTime = 0;
-  double bestTime = 0; // fastest finish (0 = none)
-  int checkpointsHit = 0;
-  late List<double> _checkpointZ;
-  late List<bool> _checkpointPassed;
-  double flashTimer = 0;
-  String flashText = '';
+  int lap = 1;
+  double currentLapTime = 0;
+  double lastLapTime = 0;
+  double bestLapTime = 0;
 
   bool keyLeft = false, keyRight = false, keyFaster = false, keySlower = false;
 
-  // one-shot events consumed by the view layer each frame
+  // audio events (read & cleared by the view layer each frame)
   bool collisionEvent = false;
-  bool checkpointEvent = false;
-  bool finishEvent = false;
-  bool gameOverEvent = false;
   bool offRoad = false;
 
   int get trackLength => segments.length * kSegmentLength;
-  double get finishZ => trackLength.toDouble();
 
   RacerGame() {
     _buildRoad();
@@ -290,7 +275,7 @@ class RacerGame {
   }
 
   static const lShort = 25, lMedium = 50, lLong = 100;
-  static const cEasy = 2.0, cMedium = 4.0;
+  static const cNone = 0.0, cEasy = 2.0, cMedium = 4.0, cHard = 6.0;
   static const hNone = 0.0, hLow = 20.0, hMedium = 40.0, hHigh = 60.0;
 
   void _addStraight([int num = lMedium]) => _addRoad(num, num, num, 0, 0);
@@ -354,32 +339,24 @@ class RacerGame {
     _addDownhillToEnd();
 
     _resetSprites();
-    _setupCheckpoints();
 
-    // start line (just ahead of the player) and finish line (at the very end)
     for (var n = 0; n < kRumbleLength; n++) {
-      _color(2 + n, kStartColor);
-      _color(segments.length - 1 - n, kFinishColor);
+      _setColor(segments.length - 1 - n, kStartColor);
+    }
+    for (var n = 0; n < kRumbleLength; n++) {
+      _setColor(n, kFinishColor);
     }
   }
 
-  void _color(int index, RoadColors c) {
-    if (index >= 0 && index < segments.length) segments[index].color = c;
-  }
-
-  void _setupCheckpoints() {
-    _checkpointZ = [];
-    _checkpointPassed = [];
-    for (var i = 1; i <= kNumCheckpoints; i++) {
-      final z = finishZ * i / (kNumCheckpoints + 1);
-      _checkpointZ.add(z);
-      _checkpointPassed.add(false);
-      // paint a bright gate band so the checkpoint is visible
-      final idx = (z / kSegmentLength).floor();
-      for (var k = 0; k < kRumbleLength; k++) {
-        _color(idx + k, kStartColor);
-      }
-    }
+  void _setColor(int index, RoadColors color) {
+    final old = segments[index];
+    final s = Segment(old.index, old.curve, color);
+    s.p1.wy = old.p1.wy;
+    s.p1.wz = old.p1.wz;
+    s.p2.wy = old.p2.wy;
+    s.p2.wz = old.p2.wz;
+    s.sprites.addAll(old.sprites);
+    segments[index] = s;
   }
 
   void _addSprite(int index, Rect src, double offset) {
@@ -388,6 +365,7 @@ class RacerGame {
     }
   }
 
+  // Ported verbatim from the original resetSprites().
   void _resetSprites() {
     _addSprite(20, Atlas.billboard07, -1);
     _addSprite(40, Atlas.billboard06, -1);
@@ -431,6 +409,7 @@ class RacerGame {
     }
   }
 
+  // Ported verbatim from the original resetCars().
   void _resetCars() {
     cars.clear();
     for (final s in segments) {
@@ -453,14 +432,6 @@ class RacerGame {
   // Update
   // -------------------------------------------------------------------------
   void update(double dt) {
-    if (state != RaceState.racing) {
-      // coast to a stop; clock and inputs are frozen
-      speed = limit(accelerate(speed, kDecel, dt), 0, kMaxSpeed);
-      position = position + dt * speed;
-      offRoad = false;
-      return;
-    }
-
     final playerSegment = findSegment(position + kPlayerZ);
     const playerW = 80 * kSpriteScale;
     final speedPercent = speed / kMaxSpeed;
@@ -469,7 +440,7 @@ class RacerGame {
 
     _updateCars(dt, playerSegment, playerW);
 
-    position = position + dt * speed; // finite track — no wrap
+    position = increase(position, dt * speed, trackLength.toDouble());
 
     if (keyLeft) {
       playerX -= dx;
@@ -497,7 +468,8 @@ class RacerGame {
             sprite.offset + spriteW / 2 * (sprite.offset > 0 ? 1 : -1),
             spriteW)) {
           speed = kMaxSpeed / 5;
-          position = playerSegment.p1.wz - kPlayerZ;
+          position =
+              increase(playerSegment.p1.wz, -kPlayerZ, trackLength.toDouble());
           collisionEvent = true;
           break;
         }
@@ -517,7 +489,6 @@ class RacerGame {
 
     playerX = limit(playerX, -3, 3);
     speed = limit(speed, 0, kMaxSpeed);
-    if (position < 0) position = 0;
 
     final delta = (position - startPosition) / kSegmentLength;
     skyOffset = increase(skyOffset, kSkySpeed * playerSegment.curve * delta, 1);
@@ -526,30 +497,17 @@ class RacerGame {
     treeOffset =
         increase(treeOffset, kTreeSpeed * playerSegment.curve * delta, 1);
 
-    // --- timing / checkpoints / finish ---
-    totalTime += dt;
-    timeLeft -= dt;
-    if (flashTimer > 0) flashTimer -= dt;
-
-    for (var i = 0; i < _checkpointZ.length; i++) {
-      if (!_checkpointPassed[i] && position >= _checkpointZ[i]) {
-        _checkpointPassed[i] = true;
-        checkpointsHit++;
-        timeLeft += kCheckpointBonus;
-        flashTimer = 2.0;
-        flashText = 'CHECKPOINT  +${kCheckpointBonus.toInt()}s';
-        checkpointEvent = true;
+    if (position > kPlayerZ) {
+      if (currentLapTime > 0 && startPosition < kPlayerZ) {
+        lastLapTime = currentLapTime;
+        if (bestLapTime == 0 || lastLapTime < bestLapTime) {
+          bestLapTime = lastLapTime;
+        }
+        currentLapTime = 0;
+        lap++;
+      } else {
+        currentLapTime += dt;
       }
-    }
-
-    if (position + kPlayerZ >= finishZ) {
-      state = RaceState.finished;
-      if (bestTime == 0 || totalTime < bestTime) bestTime = totalTime;
-      finishEvent = true;
-    } else if (timeLeft <= 0) {
-      timeLeft = 0;
-      state = RaceState.timeUp;
-      gameOverEvent = true;
     }
   }
 
@@ -607,23 +565,13 @@ class RacerGame {
     return 0;
   }
 
-  void restart() {
+  void reset() {
     position = 0;
     speed = 0;
     playerX = 0;
-    state = RaceState.racing;
-    timeLeft = kInitialTime;
-    totalTime = 0;
-    checkpointsHit = 0;
-    flashTimer = 0;
-    flashText = '';
-    for (var i = 0; i < _checkpointPassed.length; i++) {
-      _checkpointPassed[i] = false;
-    }
-    collisionEvent = false;
-    checkpointEvent = false;
-    finishEvent = false;
-    gameOverEvent = false;
+    lap = 1;
+    currentLapTime = 0;
+    lastLapTime = 0;
     _resetCars();
   }
 }
@@ -646,7 +594,6 @@ class _RacerScreenState extends State<RacerScreen>
   double _accumulator = 0;
   final FocusNode _focus = FocusNode();
   bool _audioStarted = false;
-  bool _muted = false;
 
   ui.Image? _sprites;
   ui.Image? _background;
@@ -655,8 +602,6 @@ class _RacerScreenState extends State<RacerScreen>
     if (!_audioStarted) {
       _audioStarted = true;
       EngineAudio.start();
-      EngineAudio.musicPlay(kMusicUrl);
-      EngineAudio.musicSetMuted(_muted);
     }
   }
 
@@ -706,18 +651,6 @@ class _RacerScreenState extends State<RacerScreen>
         EngineAudio.crash();
         game.collisionEvent = false;
       }
-      if (game.checkpointEvent) {
-        EngineAudio.sfxCheckpoint();
-        game.checkpointEvent = false;
-      }
-      if (game.finishEvent) {
-        EngineAudio.sfxFinish();
-        game.finishEvent = false;
-      }
-      if (game.gameOverEvent) {
-        EngineAudio.sfxGameOver();
-        game.gameOverEvent = false;
-      }
     }
     setState(() {});
   }
@@ -729,28 +662,12 @@ class _RacerScreenState extends State<RacerScreen>
     super.dispose();
   }
 
-  void _restart() {
-    game.restart();
-    _focus.requestFocus();
-  }
-
-  void _toggleMute() {
-    setState(() => _muted = !_muted);
-    EngineAudio.musicSetMuted(_muted);
-  }
-
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
     final down = event is KeyDownEvent || event is KeyRepeatEvent;
     final up = event is KeyUpEvent;
     if (!down && !up) return KeyEventResult.ignored;
     if (down) _ensureAudio();
     final k = event.logicalKey;
-    if (down &&
-        k == LogicalKeyboardKey.keyR &&
-        game.state != RaceState.racing) {
-      _restart();
-      return KeyEventResult.handled;
-    }
     if (k == LogicalKeyboardKey.arrowLeft) {
       game.keyLeft = down;
     } else if (k == LogicalKeyboardKey.arrowRight) {
@@ -767,7 +684,6 @@ class _RacerScreenState extends State<RacerScreen>
 
   @override
   Widget build(BuildContext context) {
-    final racing = game.state == RaceState.racing;
     return Scaffold(
       backgroundColor: Colors.black,
       body: Focus(
@@ -786,37 +702,8 @@ class _RacerScreenState extends State<RacerScreen>
                   painter: RoadPainter(game, _sprites, _background),
                 ),
               ),
-              _TopHud(game: game),
-              if (game.flashTimer > 0)
-                Align(
-                  alignment: const Alignment(0, -0.35),
-                  child: _Flash(text: game.flashText),
-                ),
-              // mute button
-              Positioned(
-                top: 14,
-                right: 14,
-                child: GestureDetector(
-                  onTap: _toggleMute,
-                  child: Container(
-                    width: 46,
-                    height: 46,
-                    decoration: BoxDecoration(
-                      color: Colors.black54,
-                      shape: BoxShape.circle,
-                    ),
-                    child: Icon(
-                        _muted ? Icons.volume_off : Icons.volume_up,
-                        color: Colors.white,
-                        size: 26),
-                  ),
-                ),
-              ),
-              if (racing) Positioned.fill(child: _TouchControls(game: game)),
-              if (!racing)
-                Positioned.fill(
-                  child: _EndOverlay(game: game, onRestart: _restart),
-                ),
+              Positioned(top: 16, left: 16, child: _Hud(game: game)),
+              Positioned.fill(child: _TouchControls(game: game)),
             ],
           ),
         ),
@@ -825,148 +712,44 @@ class _RacerScreenState extends State<RacerScreen>
   }
 }
 
-String _fmtTime(double t) {
-  if (t < 0) t = 0;
-  final m = t ~/ 60;
-  final s = t % 60;
-  return '${m.toString().padLeft(2, '0')}:${s.toStringAsFixed(2).padLeft(5, '0')}';
-}
-
-class _TopHud extends StatelessWidget {
+class _Hud extends StatelessWidget {
   final RacerGame game;
-  const _TopHud({required this.game});
+  const _Hud({required this.game});
+
+  String _fmt(double t) {
+    final m = (t ~/ 60);
+    final s = (t % 60);
+    return '${m.toString().padLeft(2, '0')}:${s.toStringAsFixed(2).padLeft(5, '0')}';
+  }
 
   @override
   Widget build(BuildContext context) {
     final kmh = (game.speed / 100).round();
-    final secs = game.timeLeft.ceil();
-    final low = game.timeLeft <= 10;
-    return Padding(
-      padding: const EdgeInsets.only(top: 10),
-      child: Column(
-        children: [
-          // big Out Run-style countdown
-          Text('TIME',
-              style: TextStyle(
-                  color: Colors.white.withOpacity(0.9),
-                  fontSize: 14,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 3)),
-          Text('$secs',
-              style: TextStyle(
-                color: low ? Colors.redAccent : Colors.yellowAccent,
-                fontSize: 56,
-                height: 1.0,
-                fontWeight: FontWeight.w900,
-                shadows: const [
-                  Shadow(color: Colors.black, blurRadius: 4, offset: Offset(2, 2))
-                ],
-              )),
-          const SizedBox(height: 6),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            decoration: BoxDecoration(
-                color: Colors.black54, borderRadius: BorderRadius.circular(6)),
-            child: DefaultTextStyle(
-              style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 13,
-                  fontFeatures: [FontFeature.tabularFigures()]),
-              child: FittedBox(
-                fit: BoxFit.scaleDown,
-                child: Row(mainAxisSize: MainAxisSize.min, children: [
-                Text('$kmh km/h',
-                    style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 15,
-                        fontWeight: FontWeight.bold)),
-                const SizedBox(width: 14),
-                Text('⛳ ${game.checkpointsHit}/$kNumCheckpoints'),
-                const SizedBox(width: 14),
-                Text('⏱ ${_fmtTime(game.totalTime)}'),
-              ]),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _Flash extends StatelessWidget {
-  final String text;
-  const _Flash({required this.text});
-  @override
-  Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
-        color: Colors.green.shade700.withOpacity(0.9),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: Colors.white, width: 2),
-      ),
-      child: Text(text,
-          style: const TextStyle(
-              color: Colors.white,
-              fontSize: 26,
-              fontWeight: FontWeight.w900,
-              letterSpacing: 1)),
-    );
-  }
-}
-
-class _EndOverlay extends StatelessWidget {
-  final RacerGame game;
-  final VoidCallback onRestart;
-  const _EndOverlay({required this.game, required this.onRestart});
-
-  @override
-  Widget build(BuildContext context) {
-    final finished = game.state == RaceState.finished;
-    return GestureDetector(
-      onTap: onRestart,
-      child: Container(
         color: Colors.black54,
-        alignment: Alignment.center,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: DefaultTextStyle(
+        style: const TextStyle(
+            color: Colors.white,
+            fontSize: 14,
+            fontFeatures: [FontFeature.tabularFigures()]),
         child: Column(
-          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(finished ? 'FINISH!' : 'TIME UP',
-                style: TextStyle(
-                    color: finished ? Colors.yellowAccent : Colors.redAccent,
-                    fontSize: 64,
-                    fontWeight: FontWeight.w900,
-                    shadows: const [
-                      Shadow(
-                          color: Colors.black,
-                          blurRadius: 6,
-                          offset: Offset(3, 3))
-                    ])),
-            const SizedBox(height: 8),
-            if (finished)
-              Text('Your time: ${_fmtTime(game.totalTime)}',
-                  style: const TextStyle(color: Colors.white, fontSize: 22)),
-            if (finished && game.bestTime > 0)
-              Text('Best: ${_fmtTime(game.bestTime)}',
-                  style: TextStyle(
-                      color: Colors.white.withOpacity(0.8), fontSize: 16)),
-            if (!finished)
-              Text('Checkpoints: ${game.checkpointsHit}/$kNumCheckpoints',
-                  style: const TextStyle(color: Colors.white, fontSize: 18)),
-            const SizedBox(height: 24),
-            Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 22, vertical: 12),
-              decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(30)),
-              child: const Text('TAP / PRESS R TO RESTART',
-                  style: TextStyle(
-                      color: Colors.black,
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold)),
-            ),
+            Text('$kmh km/h',
+                style: const TextStyle(
+                    color: Colors.yellowAccent,
+                    fontSize: 22,
+                    fontWeight: FontWeight.bold)),
+            Text('Lap ${game.lap}'),
+            Text('Time   ${_fmt(game.currentLapTime)}'),
+            Text(
+                'Last   ${game.lastLapTime == 0 ? "--:--.--" : _fmt(game.lastLapTime)}'),
+            Text(
+                'Best   ${game.bestLapTime == 0 ? "--:--.--" : _fmt(game.bestLapTime)}'),
           ],
         ),
       ),
@@ -1004,31 +787,18 @@ class _TouchControls extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
-          Flexible(
-            child: FittedBox(
-              fit: BoxFit.scaleDown,
-              alignment: Alignment.bottomLeft,
-              child: Row(mainAxisSize: MainAxisSize.min, children: [
-                _btn(Icons.arrow_left, (v) => game.keyLeft = v, Colors.white24),
-                const SizedBox(width: 14),
-                _btn(Icons.arrow_right, (v) => game.keyRight = v,
-                    Colors.white24),
-              ]),
-            ),
-          ),
-          Flexible(
-            child: FittedBox(
-              fit: BoxFit.scaleDown,
-              alignment: Alignment.bottomRight,
-              child: Row(mainAxisSize: MainAxisSize.min, children: [
-                _btn(Icons.keyboard_arrow_down, (v) => game.keySlower = v,
-                    Colors.white24),
-                const SizedBox(width: 14),
-                _btn(Icons.keyboard_arrow_up, (v) => game.keyFaster = v,
-                    Colors.greenAccent.withOpacity(0.25)),
-              ]),
-            ),
-          ),
+          Row(children: [
+            _btn(Icons.arrow_left, (v) => game.keyLeft = v, Colors.white24),
+            const SizedBox(width: 14),
+            _btn(Icons.arrow_right, (v) => game.keyRight = v, Colors.white24),
+          ]),
+          Row(children: [
+            _btn(Icons.keyboard_arrow_down, (v) => game.keySlower = v,
+                Colors.white24),
+            const SizedBox(width: 14),
+            _btn(Icons.keyboard_arrow_up, (v) => game.keyFaster = v,
+                Colors.greenAccent.withOpacity(0.25)),
+          ]),
         ],
       ),
     );
@@ -1096,6 +866,7 @@ class RoadPainter extends CustomPainter {
       maxy = segment.p2.sy;
     }
 
+    // sprites & cars, back to front
     final imgPaint = Paint()..filterQuality = FilterQuality.low;
     for (var n = kDrawDistance - 1; n > 0; n--) {
       final segment = g.segments[(baseSegment.index + n) % g.segments.length];
@@ -1127,6 +898,7 @@ class RoadPainter extends CustomPainter {
     }
   }
 
+  // ---- background -------------------------------------------------------
   void _drawBackground(
       Canvas canvas, double w, double h, double resolution, double playerY) {
     if (background == null) {
@@ -1168,6 +940,7 @@ class RoadPainter extends CustomPainter {
     }
   }
 
+  // ---- road segment -----------------------------------------------------
   void _renderSegment(Canvas canvas, Paint paint, double width, P p1, P p2,
       double fog, RoadColors color) {
     final r1 = _rumbleWidth(p1.sw);
@@ -1222,6 +995,7 @@ class RoadPainter extends CustomPainter {
     canvas.drawPath(path, paint);
   }
 
+  // ---- atlas sprite (Render.sprite) -------------------------------------
   void _renderSprite(Canvas canvas, Paint paint, double width, double height,
       Rect src, double scale, double destX, double destY, double offsetX,
       double offsetY, double clipY) {
@@ -1235,12 +1009,12 @@ class RoadPainter extends CustomPainter {
     if (clipH >= destH) return;
     canvas.drawImageRect(
         sprites!,
-        Rect.fromLTWH(
-            src.left, src.top, src.width, src.height - src.height * clipH / destH),
+        Rect.fromLTWH(src.left, src.top, src.width, src.height - src.height * clipH / destH),
         Rect.fromLTWH(dx, dy, destW, destH - clipH),
         paint);
   }
 
+  // ---- player car (Render.player) ---------------------------------------
   void _renderPlayer(Canvas canvas, Paint paint, double width, double height,
       double resolution, double speedPercent, Segment playerSegment,
       double playerPercent) {
