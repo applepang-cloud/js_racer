@@ -44,16 +44,30 @@
     // background/programmatically-sized window. Nudge it to re-measure whenever
     // the window gains focus, becomes visible, or is resized.
     (function () {
-      function nudge() { window.dispatchEvent(new Event('resize')); }
+      // The Flutter web engine measures the viewport via `visualViewport`
+      // (and a ResizeObserver), NOT the window 'resize' event. When the page
+      // is first laid out in a background/narrow tab it can latch onto a wrong
+      // size and never re-measure. Fire a visualViewport 'resize' so the engine
+      // re-reads the (correct) current size.
+      function nudge() {
+        var ev = new Event('resize');
+        window.dispatchEvent(ev);
+        if (window.visualViewport) window.visualViewport.dispatchEvent(new Event('resize'));
+      }
       window.addEventListener('focus', nudge);
       window.addEventListener('pageshow', nudge);
       document.addEventListener('visibilitychange', nudge);
       window.addEventListener('load', function () {
-        nudge();
-        setTimeout(nudge, 200);
-        setTimeout(nudge, 800);
-        setTimeout(nudge, 2000);
+        [0, 100, 300, 700, 1500, 3000].forEach(function (t) { setTimeout(nudge, t); });
       });
+      // keep nudging until the engine's view matches the window (max ~6s)
+      var tries = 0;
+      var iv = setInterval(function () {
+        var v = document.querySelector('flutter-view');
+        var w = v ? v.getBoundingClientRect().width : 0;
+        if (Math.abs(w - window.innerWidth) > 4) nudge();
+        if (++tries > 60) clearInterval(iv);
+      }, 100);
       try { new ResizeObserver(nudge).observe(document.documentElement); } catch (e) {}
     })();
   </script>
