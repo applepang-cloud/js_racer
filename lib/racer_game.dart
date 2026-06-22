@@ -780,17 +780,20 @@ class _RacerScreenState extends State<RacerScreen>
             _focus.requestFocus();
           },
           child: Stack(
+            fit: StackFit.expand,
             children: [
               Positioned.fill(
                 child: CustomPaint(
                   painter: RoadPainter(game, _sprites, _background),
                 ),
               ),
-              _TopHud(game: game),
+              Positioned(top: 0, left: 0, right: 0, child: _TopHud(game: game)),
               if (game.flashTimer > 0)
-                Align(
-                  alignment: const Alignment(0, -0.35),
-                  child: _Flash(text: game.flashText),
+                Positioned.fill(
+                  child: Align(
+                    alignment: const Alignment(0, -0.35),
+                    child: _Flash(text: game.flashText),
+                  ),
                 ),
               // mute button
               Positioned(
