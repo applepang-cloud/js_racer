@@ -84,8 +84,8 @@
     oscA.frequency.setTargetAtTime(base, now, 0.03);
     oscB.frequency.setTargetAtTime(base, now, 0.03);
     lowpass.frequency.setTargetAtTime(500 + rpm * 2600, now, 0.05);
-    // idle hum even at 0, louder with throttle
-    engineGain.gain.setTargetAtTime(0.12 + rpm * 0.5, now, 0.05);
+    // idle hum even at 0, louder with throttle (kept quieter so music leads)
+    engineGain.gain.setTargetAtTime(0.06 + rpm * 0.28, now, 0.05);
   };
 
   window.__engineOffroad = function (on) {
@@ -153,7 +153,7 @@
     if (!music) {
       music = new Audio(url);
       music.loop = true;
-      music.volume = 0.18;
+      music.volume = 0.5;
     }
     const p = music.play();
     if (p && p.catch) p.catch(function () {});

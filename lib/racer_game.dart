@@ -42,8 +42,8 @@ const double kHillSpeed = 0.002;
 const double kTreeSpeed = 0.003;
 
 // Out Run-style timing
-const double kInitialTime = 45; // seconds on the clock at the start line
-const double kCheckpointBonus = 35; // seconds added per checkpoint
+const double kInitialTime = 40; // seconds on the clock at the start line
+const double kCheckpointBonus = 25; // seconds added per checkpoint
 const int kNumCheckpoints = 4;
 
 const String kMusicUrl = 'assets/assets/racer.mp3';

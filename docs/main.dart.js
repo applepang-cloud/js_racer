@@ -17628,7 +17628,7 @@ _.b=b
 _.c=c
 _.y=_.x=_.w=_.f=_.e=_.d=0
 _.z=d
-_.Q=45
+_.Q=40
 _.ax=_.at=_.as=0
 _.ch=_.ay=$
 _.CW=0
@@ -52909,7 +52909,7 @@ return}if(b===B.cF){c.e=0
 c.k1=!1
 if((c.cy-=a)<=0){c.z=B.ht
 c.as=0
-c.Q=45}return}if(b!==B.ht){b=Math.max(0,Math.min(c.e+-2400*a,12e3))
+c.Q=40}return}if(b!==B.ht){b=Math.max(0,Math.min(c.e+-2400*a,12e3))
 c.e=b
 c.d=c.d+a*b
 c.k1=!1
@@ -52963,9 +52963,9 @@ if(!(d<b.length))break
 o=c.ch
 o===$&&A.b()
 if(!o[d]&&c.d>=b[d]){o[d]=!0;++c.ax
-c.Q+=35
+c.Q+=25
 c.CW=2
-c.cx="CHECKPOINT  +35s"
+c.cx="CHECKPOINT  +25s"
 c.fy=!0}++d}if(c.d+$.nY()>=c.a.length*200){c.z=B.e5
 b=c.at
 if(b===0||c.as<b)c.at=c.as
@@ -52996,7 +52996,7 @@ if(r>0.9)return-0.1
 return 0},
 ng(){var s,r,q,p=this
 p.f=p.e=p.d=0
-p.Q=45
+p.Q=40
 s=p.CW=p.ax=p.as=0
 p.cx=""
 r=p.ch
