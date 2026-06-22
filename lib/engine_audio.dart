@@ -9,4 +9,11 @@ class EngineAudio {
   static void offroad(bool on) => impl.engineOffroad(on);
   static void crash() => impl.engineCrash();
   static void stop() => impl.engineStop();
+
+  static void sfxCheckpoint() => impl.sfxCheckpoint();
+  static void sfxFinish() => impl.sfxFinish();
+  static void sfxGameOver() => impl.sfxGameOver();
+
+  static void musicPlay(String url) => impl.musicPlay(url);
+  static void musicSetMuted(bool m) => impl.musicSetMuted(m);
 }

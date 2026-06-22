@@ -15,3 +15,18 @@ external void engineCrash();
 
 @JS('__engineStop')
 external void engineStop();
+
+@JS('__sfxCheckpoint')
+external void sfxCheckpoint();
+
+@JS('__sfxFinish')
+external void sfxFinish();
+
+@JS('__sfxGameOver')
+external void sfxGameOver();
+
+@JS('__musicPlay')
+external void musicPlay(String url);
+
+@JS('__musicSetMuted')
+external void musicSetMuted(bool m);

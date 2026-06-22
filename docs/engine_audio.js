@@ -114,4 +114,51 @@
   window.__engineStop = function () {
     if (ctx && ctx.state === 'running') ctx.suspend();
   };
+
+  // --- short musical SFX (oscillator blips) ---
+  function blip(freq, start, dur, type, peak) {
+    if (!started || !ctx) return;
+    const t0 = ctx.currentTime + start;
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = type || 'square';
+    o.frequency.value = freq;
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(peak || 0.3, t0 + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    o.connect(g); g.connect(master);
+    o.start(t0); o.stop(t0 + dur + 0.02);
+  }
+
+  window.__sfxCheckpoint = function () {
+    blip(880, 0, 0.12, 'square', 0.3);
+    blip(1320, 0.1, 0.16, 'square', 0.3);
+  };
+
+  window.__sfxFinish = function () {
+    blip(660, 0, 0.15, 'square', 0.35);
+    blip(880, 0.14, 0.15, 'square', 0.35);
+    blip(1320, 0.28, 0.30, 'square', 0.35);
+  };
+
+  window.__sfxGameOver = function () {
+    blip(440, 0, 0.25, 'sawtooth', 0.3);
+    blip(330, 0.22, 0.25, 'sawtooth', 0.3);
+    blip(220, 0.44, 0.45, 'sawtooth', 0.3);
+  };
+
+  // --- background music (original racer.mp3) ---
+  let music = null;
+  window.__musicPlay = function (url) {
+    if (!music) {
+      music = new Audio(url);
+      music.loop = true;
+      music.volume = 0.18;
+    }
+    const p = music.play();
+    if (p && p.catch) p.catch(function () {});
+  };
+  window.__musicSetMuted = function (m) {
+    if (music) music.muted = !!m;
+  };
 })();
