@@ -32,6 +32,29 @@
   <title>JS Racer</title>
   <link rel="manifest" href="manifest.json">
   <script src="engine_audio.js"></script>
+  <style>
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%;
+                 overflow: hidden; background: #72D7EE; }
+    flutter-view, flt-glass-pane { width: 100% !important; height: 100% !important; }
+  </style>
+  <script>
+    // Flutter web can cache a stale viewport size when the page is opened in a
+    // background/programmatically-sized window. Nudge it to re-measure whenever
+    // the window gains focus, becomes visible, or is resized.
+    (function () {
+      function nudge() { window.dispatchEvent(new Event('resize')); }
+      window.addEventListener('focus', nudge);
+      window.addEventListener('pageshow', nudge);
+      document.addEventListener('visibilitychange', nudge);
+      window.addEventListener('load', function () {
+        nudge();
+        setTimeout(nudge, 200);
+        setTimeout(nudge, 800);
+        setTimeout(nudge, 2000);
+      });
+      try { new ResizeObserver(nudge).observe(document.documentElement); } catch (e) {}
+    })();
+  </script>
 </head>
 <body>
   <!--
