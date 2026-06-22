@@ -48,7 +48,7 @@ const int kNumCheckpoints = 4;
 
 const String kMusicUrl = 'assets/assets/racer.mp3';
 
-enum RaceState { racing, finished, timeUp }
+enum RaceState { title, countdown, racing, finished, timeUp }
 
 // ---------------------------------------------------------------------------
 // Sprite atlas — exact coordinates from the original common.js
@@ -225,7 +225,7 @@ class RacerGame {
   double treeOffset = 0;
 
   // race state
-  RaceState state = RaceState.racing;
+  RaceState state = RaceState.title;
   double timeLeft = kInitialTime;
   double totalTime = 0;
   double bestTime = 0; // fastest finish (0 = none)
@@ -234,6 +234,16 @@ class RacerGame {
   late List<bool> _checkpointPassed;
   double flashTimer = 0;
   String flashText = '';
+  double countdownTimer = 0; // 3..2..1..GO before the race starts
+
+  /// Big label shown during the pre-race countdown.
+  String get countdownLabel {
+    final t = countdownTimer;
+    if (t > 2.7) return '3';
+    if (t > 1.7) return '2';
+    if (t > 0.7) return '1';
+    return 'GO!';
+  }
 
   bool keyLeft = false, keyRight = false, keyFaster = false, keySlower = false;
 
@@ -453,8 +463,24 @@ class RacerGame {
   // Update
   // -------------------------------------------------------------------------
   void update(double dt) {
+    if (state == RaceState.title) {
+      speed = 0;
+      offRoad = false;
+      return;
+    }
+    if (state == RaceState.countdown) {
+      speed = 0;
+      offRoad = false;
+      countdownTimer -= dt;
+      if (countdownTimer <= 0) {
+        state = RaceState.racing;
+        totalTime = 0;
+        timeLeft = kInitialTime;
+      }
+      return;
+    }
     if (state != RaceState.racing) {
-      // coast to a stop; clock and inputs are frozen
+      // finished / timeUp: coast to a stop; clock and inputs are frozen
       speed = limit(accelerate(speed, kDecel, dt), 0, kMaxSpeed);
       position = position + dt * speed;
       offRoad = false;
@@ -607,11 +633,11 @@ class RacerGame {
     return 0;
   }
 
-  void restart() {
+  /// Reset all race variables and begin the 3-2-1-GO countdown.
+  void startCountdown() {
     position = 0;
     speed = 0;
     playerX = 0;
-    state = RaceState.racing;
     timeLeft = kInitialTime;
     totalTime = 0;
     checkpointsHit = 0;
@@ -625,7 +651,12 @@ class RacerGame {
     finishEvent = false;
     gameOverEvent = false;
     _resetCars();
+    countdownTimer = 3.7;
+    state = RaceState.countdown;
   }
+
+  /// Restart after finishing or running out of time (re-runs the countdown).
+  void restart() => startCountdown();
 }
 
 // ---------------------------------------------------------------------------
@@ -647,6 +678,7 @@ class _RacerScreenState extends State<RacerScreen>
   final FocusNode _focus = FocusNode();
   bool _audioStarted = false;
   bool _muted = false;
+  String _lastCount = '';
 
   ui.Image? _sprites;
   ui.Image? _background;
@@ -718,6 +750,20 @@ class _RacerScreenState extends State<RacerScreen>
         EngineAudio.sfxGameOver();
         game.gameOverEvent = false;
       }
+      // 3-2-1-GO beeps
+      if (game.state == RaceState.countdown) {
+        final label = game.countdownLabel;
+        if (label != _lastCount) {
+          _lastCount = label;
+          if (label == 'GO!') {
+            EngineAudio.sfxFinish();
+          } else {
+            EngineAudio.sfxCheckpoint();
+          }
+        }
+      } else {
+        _lastCount = '';
+      }
     }
     setState(() {});
   }
@@ -727,6 +773,12 @@ class _RacerScreenState extends State<RacerScreen>
     _ticker.dispose();
     _focus.dispose();
     super.dispose();
+  }
+
+  void _start() {
+    _ensureAudio();
+    game.startCountdown();
+    _focus.requestFocus();
   }
 
   void _restart() {
@@ -745,9 +797,15 @@ class _RacerScreenState extends State<RacerScreen>
     if (!down && !up) return KeyEventResult.ignored;
     if (down) _ensureAudio();
     final k = event.logicalKey;
+    // any key starts the race from the title screen
+    if (down && game.state == RaceState.title) {
+      _start();
+      return KeyEventResult.handled;
+    }
     if (down &&
         k == LogicalKeyboardKey.keyR &&
-        game.state != RaceState.racing) {
+        (game.state == RaceState.finished ||
+            game.state == RaceState.timeUp)) {
       _restart();
       return KeyEventResult.handled;
     }
@@ -767,7 +825,11 @@ class _RacerScreenState extends State<RacerScreen>
 
   @override
   Widget build(BuildContext context) {
-    final racing = game.state == RaceState.racing;
+    final state = game.state;
+    final racing = state == RaceState.racing;
+    final showHud = state == RaceState.racing || state == RaceState.countdown;
+    final ended =
+        state == RaceState.finished || state == RaceState.timeUp;
     return Scaffold(
       backgroundColor: Colors.black,
       body: Focus(
@@ -777,6 +839,7 @@ class _RacerScreenState extends State<RacerScreen>
         child: Listener(
           onPointerDown: (_) {
             _ensureAudio();
+            if (game.state == RaceState.title) game.startCountdown();
             _focus.requestFocus();
           },
           child: Stack(
@@ -787,7 +850,9 @@ class _RacerScreenState extends State<RacerScreen>
                   painter: RoadPainter(game, _sprites, _background),
                 ),
               ),
-              Positioned(top: 0, left: 0, right: 0, child: _TopHud(game: game)),
+              if (showHud)
+                Positioned(
+                    top: 0, left: 0, right: 0, child: _TopHud(game: game)),
               if (game.flashTimer > 0)
                 Positioned.fill(
                   child: Align(
@@ -816,7 +881,11 @@ class _RacerScreenState extends State<RacerScreen>
                 ),
               ),
               if (racing) Positioned.fill(child: _TouchControls(game: game)),
-              if (!racing)
+              if (state == RaceState.title)
+                Positioned.fill(child: _TitleOverlay(onStart: _start)),
+              if (state == RaceState.countdown)
+                Positioned.fill(child: _CountdownOverlay(game: game)),
+              if (ended)
                 Positioned.fill(
                   child: _EndOverlay(game: game, onRestart: _restart),
                 ),
@@ -972,6 +1041,120 @@ class _EndOverlay extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _TitleOverlay extends StatelessWidget {
+  final VoidCallback onStart;
+  const _TitleOverlay({required this.onStart});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onStart,
+      child: Container(
+        color: Colors.black.withOpacity(0.45),
+        alignment: Alignment.center,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('JS RACER',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 72,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 4,
+                  shadows: [
+                    Shadow(color: Colors.black, blurRadius: 8, offset: Offset(3, 3)),
+                  ],
+                )),
+            Text('OUT RUN MODE',
+                style: TextStyle(
+                    color: Colors.yellowAccent,
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 6,
+                    shadows: const [
+                      Shadow(color: Colors.black, blurRadius: 4, offset: Offset(2, 2)),
+                    ])),
+            const SizedBox(height: 40),
+            _Blink(
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 26, vertical: 13),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(30),
+                ),
+                child: const Text('PRESS ANY KEY / TAP TO START',
+                    style: TextStyle(
+                        color: Colors.black,
+                        fontSize: 17,
+                        fontWeight: FontWeight.bold)),
+              ),
+            ),
+            const SizedBox(height: 28),
+            Text('↑ accelerate   ↓ brake   ← → steer',
+                style: TextStyle(
+                    color: Colors.white.withOpacity(0.85), fontSize: 14)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Simple fade in/out blinker for the "press start" prompt.
+class _Blink extends StatefulWidget {
+  final Widget child;
+  const _Blink({required this.child});
+  @override
+  State<_Blink> createState() => _BlinkState();
+}
+
+class _BlinkState extends State<_Blink>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(
+      vsync: this, duration: const Duration(milliseconds: 700))
+    ..repeat(reverse: true);
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FadeTransition(
+      opacity: Tween(begin: 1.0, end: 0.25).animate(_c),
+      child: widget.child,
+    );
+  }
+}
+
+class _CountdownOverlay extends StatelessWidget {
+  final RacerGame game;
+  const _CountdownOverlay({required this.game});
+
+  @override
+  Widget build(BuildContext context) {
+    final label = game.countdownLabel;
+    final go = label == 'GO!';
+    return IgnorePointer(
+      child: Center(
+        child: Text(label,
+            style: TextStyle(
+              color: go ? Colors.greenAccent : Colors.white,
+              fontSize: go ? 90 : 130,
+              fontWeight: FontWeight.w900,
+              shadows: const [
+                Shadow(color: Colors.black, blurRadius: 12, offset: Offset(4, 4)),
+              ],
+            )),
       ),
     );
   }
